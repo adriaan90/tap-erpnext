@@ -1,0 +1,70 @@
+send_anonymous_usage_stats: true
+project_id: "tap-erpnext"
+default_environment: test
+requires_meltano: ">=4.0"
+environments:
+- name: test
+plugins:
+  extractors:
+  - name: "tap-erpnext"
+    namespace: "tap_erpnext"
+    pip_url: -e .
+    capabilities:
+    - state
+    - catalog
+    - discover
+    - about
+    - stream-maps
+    - structured-logging
+
+    # ERPNext settings
+    settings:
+    - name: api_url
+      label: API URL
+      description: The base URL of the ERPNext instance (e.g. https://erp.example.com)
+      kind: string
+
+    - name: api_key
+      label: API Key
+      description: ERPNext API key
+      sensitive: true
+
+    - name: api_secret
+      label: API Secret
+      description: ERPNext API secret
+      sensitive: true
+
+    - name: start_date
+      kind: date_iso8601
+      label: Start Date
+      description: Initial date to start extracting data from
+
+    - name: limit_page_length
+      kind: integer
+      label: Page Length
+      description: Number of records to fetch per API request
+
+    - name: doctypes
+      kind: array
+      label: DocTypes
+      description: Specific DocType names to sync (optional; if empty, all accessible DocTypes are discovered)
+
+    # Required settings
+    settings_group_validation:
+    - [api_url, api_key, api_secret]
+
+    # Default configuration values
+    config:
+      start_date: 6 months ago
+      limit_page_length: 200
+
+  loaders:
+  - name: target-jsonl
+    variant: andyh1203
+    pip_url: target-jsonl
+  - name: target-sqlite
+    variant: meltanolabs
+    pip_url: meltanolabs-target-sqlite
+    config:
+      database: ${MELTANO_PROJECT_ROOT}/output/erpnext.db
+      batch_size: 50
