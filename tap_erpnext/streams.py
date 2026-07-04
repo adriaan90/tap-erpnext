@@ -2,7 +2,42 @@
 
 from __future__ import annotations
 
+from typing import Literal, overload
+
 from tap_erpnext.client import ChildTableStream, ErpNextStream
+
+
+@overload
+def create_doctype_stream(
+    doctype: str,
+    tap,
+    *,
+    is_child: Literal[True],
+    parent_doctype: str | None = None,
+    parent_field: str | None = None,
+) -> ChildTableStream: ...
+
+
+@overload
+def create_doctype_stream(
+    doctype: str,
+    tap,
+    *,
+    is_child: Literal[False] = False,
+    parent_doctype: str | None = None,
+    parent_field: str | None = None,
+) -> ErpNextStream: ...
+
+
+@overload
+def create_doctype_stream(
+    doctype: str,
+    tap,
+    *,
+    is_child: bool = False,
+    parent_doctype: str | None = None,
+    parent_field: str | None = None,
+) -> ErpNextStream | ChildTableStream: ...
 
 
 def create_doctype_stream(
@@ -11,7 +46,7 @@ def create_doctype_stream(
     is_child: bool = False,
     parent_doctype: str | None = None,
     parent_field: str | None = None,
-) -> ErpNextStream:
+) -> ErpNextStream | ChildTableStream:
     """Factory: create a stream instance for a specific DocType.
 
     Uses `type()` to create a dynamic subclass with `name` as a class attribute,
