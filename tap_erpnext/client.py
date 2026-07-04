@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
 import decimal
 import json
 import sys
 from typing import TYPE_CHECKING, Any
 
 import requests
-from singer_sdk import StreamSchema
+from singer_sdk import StreamSchema, typing as th
 from singer_sdk.authenticators import APIKeyAuthenticator
 from singer_sdk.helpers.jsonpath import extract_jsonpath
 from singer_sdk.pagination import OffsetPaginator
@@ -27,9 +28,8 @@ if TYPE_CHECKING:
 class ErpNextAuthenticator(APIKeyAuthenticator):
     """Custom authenticator for ERPNext token-based authentication."""
 
-    def __init__(self, stream: RESTStream, api_key: str, api_secret: str):
+    def __init__(self, api_key: str, api_secret: str):
         super().__init__(
-            stream=stream,
             key="Authorization",
             value=f"token {api_key}:{api_secret}",
             location="header",
@@ -42,7 +42,100 @@ class ErpNextStream(RESTStream):
     # ERPNext wraps records in {"data": [...]}
     records_jsonpath = "$.data[*]"
 
-    # schema: ClassVar[StreamSchema] = StreamSchema(SCHEMAS_DIR)
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the stream with a lazy schema cache."""
+        super().__init__(*args, **kwargs)
+        self._schema: dict | None = None
+
+    @override
+    @property
+    def schema(self) -> dict:
+        """Return the stream schema, dynamically discovered from the API.
+
+        On first access, fetches a sample record to infer field names and types.
+        Falls back to a minimal schema if no records exist or the API is unreachable.
+        """
+        if self._schema is not None:
+            return self._schema
+
+        sample = self._fetch_sample_record()
+        if sample:
+            self._schema = self._infer_schema_from_record(sample)
+        else:
+            self._schema = self._minimal_schema()
+
+        return self._schema
+
+    def _minimal_schema(self) -> dict:
+        """Return a minimal fallback schema (name + modified only)."""
+        return th.PropertiesList(
+            th.Property("name", th.StringType, required=True),
+            th.Property("modified", th.DateTimeType),
+        ).to_dict()
+
+    def _fetch_sample_record(self) -> dict | None:
+        """Fetch a single record from the API to infer the schema.
+
+        Returns:
+            A sample record dict, or None if no records exist or the request fails.
+        """
+        url = f"{self.url_base}{self.path}"
+        headers = self.authenticator.auth_headers or {}
+        params = {
+            "fields": json.dumps(["*"]),
+            "limit_page_length": 1,
+        }
+        try:
+            response = requests.get(
+                url, headers=headers, params=params, timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            records = data.get("data", [])
+            if records:
+                return records[0]
+            self.logger.warning(
+                f"No records found for {self.name} — using minimal schema.",
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to fetch sample record for {self.name}: {e} — "
+                f"using minimal schema.",
+            )
+        return None
+
+    @staticmethod
+    def _infer_schema_from_record(record: dict) -> dict:
+        """Build a Singer schema by inferring types from a sample record.
+
+        Args:
+            record: A single record dict from the ERPNext API.
+
+        Returns:
+            A Singer-compatible JSON Schema dict with all discovered fields.
+        """
+        props = []
+        for key, value in record.items():
+            if value is None:
+                # Can't infer type from None — default to string
+                stype = th.StringType
+            elif isinstance(value, bool):
+                stype = th.BooleanType
+            elif isinstance(value, int):
+                stype = th.IntegerType
+            elif isinstance(value, float):
+                stype = th.NumberType
+            elif isinstance(value, (datetime.date, datetime.datetime)):
+                stype = th.DateTimeType
+            elif isinstance(value, list):
+                stype = th.ArrayType(th.StringType)
+            elif isinstance(value, dict):
+                stype = th.ObjectType()
+            else:
+                stype = th.StringType
+            props.append(th.Property(key, stype))
+
+        return th.PropertiesList(*props).to_dict()
 
     @override
     @property
@@ -55,7 +148,6 @@ class ErpNextStream(RESTStream):
     def authenticator(self) -> ErpNextAuthenticator:
         """Return a new authenticator object."""
         return ErpNextAuthenticator(
-            stream=self,
             api_key=self.config["api_key"],
             api_secret=self.config["api_secret"],
         )

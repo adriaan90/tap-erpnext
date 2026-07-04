@@ -2,17 +2,7 @@
 
 from __future__ import annotations
 
-from singer_sdk import typing as th
 from tap_erpnext.client import ErpNextStream
-
-# Dynamic schema: allow all properties since we fetch all fields.
-# ERPNext always returns "name" and "modified" at minimum.
-DYNAMIC_SCHEMA = th.PropertiesList(
-    th.Property("name", th.StringType, required=True),
-    th.Property("modified", th.DateTimeType),
-).to_dict()
-# Allow additional properties (all other ERPNext fields)
-DYNAMIC_SCHEMA["additionalProperties"] = True
 
 
 def create_doctype_stream(doctype: str, tap) -> ErpNextStream:
@@ -20,6 +10,9 @@ def create_doctype_stream(doctype: str, tap) -> ErpNextStream:
 
     Uses `type()` to create a dynamic subclass with `name` as a class attribute,
     which is required by the Singer SDK.
+
+    Schema discovery is handled dynamically by ErpNextStream — on first access
+    it fetches a sample record from the API and infers field names and types.
 
     Args:
         doctype: The ERPNext DocType name (e.g., "Sales Invoice").
@@ -41,7 +34,6 @@ def create_doctype_stream(doctype: str, tap) -> ErpNextStream:
             "path": f"/api/resource/{doctype}",
             "primary_keys": ("name",),
             "replication_key": "modified",
-            "schema": DYNAMIC_SCHEMA,
             "__doc__": f"ERPNext {doctype} stream.",
         },
     )

@@ -57,7 +57,7 @@ typing = [
 ]
 
 [tool.hatch.version]
-fallback-version = "0.1.0.dev0"
+fallback-version = "0.2.0"
 source = "vcs"
 
 [tool.mypy]

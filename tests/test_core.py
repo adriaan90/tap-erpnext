@@ -53,19 +53,62 @@ def test_create_doctype_stream():
     assert stream.path == "/api/resource/Sales Invoice"
     assert stream.primary_keys == ("name",)
     assert stream.replication_key == "modified"
-    assert stream.schema["additionalProperties"] is True
+    # Schema is lazy — not fetched until first access
+    assert stream._schema is None
 
 
-def test_doctype_stream_schema_allows_additional_properties():
-    """Test that the dynamic schema allows all ERPNext fields."""
+def test_doctype_stream_schema_infers_from_sample():
+    """Test that the schema is dynamically inferred from a sample record."""
     tap = _make_mock_tap()
     stream = create_doctype_stream("Item", tap)
-    schema = stream.schema
+
+    # Simulate what _fetch_sample_record would return
+    sample = {
+        "name": "ITEM-001",
+        "modified": "2023-01-01 10:00:00",
+        "item_name": "Widget",
+        "item_group": "Products",
+        "standard_rate": 99.95,
+        "disabled": False,
+        "has_variants": 0,
+    }
+    schema = stream._infer_schema_from_record(sample)
 
     assert schema["type"] == "object"
     assert "name" in schema["properties"]
     assert "modified" in schema["properties"]
-    assert schema["additionalProperties"] is True
+    assert "item_name" in schema["properties"]
+    assert "item_group" in schema["properties"]
+    assert "standard_rate" in schema["properties"]
+    assert "disabled" in schema["properties"]
+    assert "has_variants" in schema["properties"]
+    # No additionalProperties — all fields are explicitly declared
+    assert "additionalProperties" not in schema
+
+
+def test_doctype_stream_schema_fallback_minimal():
+    """Test that the minimal fallback schema is used when no sample is available."""
+    tap = _make_mock_tap()
+    stream = create_doctype_stream("EmptyDoctype", tap)
+
+    schema = stream._minimal_schema()
+    assert schema["type"] == "object"
+    assert "name" in schema["properties"]
+    assert "modified" in schema["properties"]
+    assert len(schema["properties"]) == 2
+
+
+def test_infer_schema_none_values():
+    """Test that None values default to StringType."""
+    from tap_erpnext.client import ErpNextStream
+
+    sample = {
+        "name": "TEST",
+        "maybe_null": None,
+    }
+    schema = ErpNextStream._infer_schema_from_record(sample)
+    assert "maybe_null" in schema["properties"]
+    assert schema["properties"]["maybe_null"]["type"] == ["string", "null"]
 
 
 def test_create_doctype_stream_with_spaces():
@@ -76,13 +119,18 @@ def test_create_doctype_stream_with_spaces():
     assert "Sales_Invoice" in stream.__class__.__name__
 
 
+@patch("tap_erpnext.client.ErpNextStream._fetch_sample_record")
 @patch("tap_erpnext.tap.requests.get")
-def test_discover_streams(mock_get):
+def test_discover_streams(mock_tap_get, mock_fetch):
     """Test DocType discovery."""
-    mock_response = Mock()
-    mock_response.json.return_value = MOCK_DOCTYPES_RESPONSE
-    mock_response.raise_for_status.return_value = None
-    mock_get.return_value = mock_response
+    # Mock the DocType discovery call
+    mock_tap_response = Mock()
+    mock_tap_response.json.return_value = MOCK_DOCTYPES_RESPONSE
+    mock_tap_response.raise_for_status.return_value = None
+    mock_tap_get.return_value = mock_tap_response
+
+    # Mock schema discovery — return a valid sample record
+    mock_fetch.return_value = {"name": "TEST", "modified": "2023-01-01"}
 
     tap = TapErpNext(config=SAMPLE_CONFIG)
     streams = tap.discover_streams()
@@ -93,13 +141,16 @@ def test_discover_streams(mock_get):
     assert streams[2].name == "Item"
 
 
+@patch("tap_erpnext.client.ErpNextStream._fetch_sample_record")
 @patch("tap_erpnext.tap.requests.get")
-def test_discover_streams_with_config_doctypes(mock_get):
+def test_discover_streams_with_config_doctypes(mock_tap_get, mock_fetch):
     """Test DocType discovery with configured doctypes filter."""
-    mock_response = Mock()
-    mock_response.json.return_value = MOCK_DOCTYPES_RESPONSE
-    mock_response.raise_for_status.return_value = None
-    mock_get.return_value = mock_response
+    mock_tap_response = Mock()
+    mock_tap_response.json.return_value = MOCK_DOCTYPES_RESPONSE
+    mock_tap_response.raise_for_status.return_value = None
+    mock_tap_get.return_value = mock_tap_response
+
+    mock_fetch.return_value = {"name": "TEST", "modified": "2023-01-01"}
 
     config = SAMPLE_CONFIG.copy()
     config["doctypes"] = ["Sales Invoice", "Item"]
@@ -112,13 +163,16 @@ def test_discover_streams_with_config_doctypes(mock_get):
     assert streams[1].name == "Item"
 
 
+@patch("tap_erpnext.client.ErpNextStream._fetch_sample_record")
 @patch("tap_erpnext.tap.requests.get")
-def test_discover_streams_missing_doctypes_warns(mock_get, caplog):
+def test_discover_streams_missing_doctypes_warns(mock_tap_get, mock_fetch, caplog):
     """Test that missing configured doctypes log a warning."""
-    mock_response = Mock()
-    mock_response.json.return_value = MOCK_DOCTYPES_RESPONSE
-    mock_response.raise_for_status.return_value = None
-    mock_get.return_value = mock_response
+    mock_tap_response = Mock()
+    mock_tap_response.json.return_value = MOCK_DOCTYPES_RESPONSE
+    mock_tap_response.raise_for_status.return_value = None
+    mock_tap_get.return_value = mock_tap_response
+
+    mock_fetch.return_value = {"name": "TEST", "modified": "2023-01-01"}
 
     config = SAMPLE_CONFIG.copy()
     config["doctypes"] = ["NonExistent", "Customer"]
