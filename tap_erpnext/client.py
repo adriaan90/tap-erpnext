@@ -133,9 +133,21 @@ class ErpNextStream(RESTStream):
                 return th.ObjectType()
             return th.StringType
 
-        return th.PropertiesList(
+        schema = th.PropertiesList(
             *[th.Property(key, _singer_type(value)) for key, value in record.items()],
         ).to_dict()
+
+        # Force known datetime fields to DateTimeType.
+        # ERPNext returns datetimes as JSON strings, so type inference
+        # defaults to StringType — but the Singer SDK requires DateTimeType
+        # for replication keys like "modified".
+        _DATETIME_FIELDS = frozenset({"modified", "creation"})
+        for prop_name, prop_schema in schema.get("properties", {}).items():
+            if prop_name in _DATETIME_FIELDS:
+                prop_schema["type"] = ["string", "null"]
+                prop_schema["format"] = "date-time"
+
+        return schema
 
     @override
     @property
