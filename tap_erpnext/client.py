@@ -257,20 +257,21 @@ class ErpNextStream(RESTStream):
 class ChildTableStream(ErpNextStream):
     """Stream for ERPNext child tables (istable=1).
 
-    ERPNext's list endpoint for child doctypes only returns stubs
-    (name, owner, creation, modified, etc.) — the actual data fields
-    (account, debit, credit, etc.) are only available embedded inside
-    the parent document.
+    ERPNext's list endpoint for parent doctypes does NOT include child
+    table data — only the single-document endpoint does. So we:
 
-    This stream paginates through the **parent** endpoint and extracts
-    child records from the embedded table field (e.g. the ``accounts``
-    field on a Journal Entry).
+    1. Paginate the parent list with ``fields=["name"]`` to get IDs.
+    2. For each page, fetch all parent single-docs in parallel.
+    3. Extract child records from the embedded table field.
+
+    Uses ThreadPoolExecutor for parallel single-doc fetches (one per
+    parent in the page) to keep sync times reasonable.
     """
 
-    # Child tables don't have a modified-based replication key in practice
-    # because the list endpoint doesn't return meaningful modified values
-    # for filtering. We use the parent's sync as the driver instead.
     replication_key = None
+
+    # Max concurrent single-doc fetches per page
+    _MAX_WORKERS = 20
 
     def __init__(
         self,
@@ -290,43 +291,53 @@ class ChildTableStream(ErpNextStream):
         self._parent_doctype = parent_doctype
         self._parent_field = parent_field
 
-        # Override path to point to the PARENT endpoint — child data
-        # is only available embedded inside parent documents.
+        # Override path to the PARENT list endpoint — we paginate parent IDs
+        # and then fetch each parent individually to extract child records.
         if parent_doctype:
             self.path = f"/api/resource/{parent_doctype}"
 
+    def _make_request(self, path: str, params: dict | None = None) -> requests.Response:
+        """Make an authenticated GET request to the ERPNext API."""
+        url = f"{self.url_base}{path}"
+        headers = self.authenticator.auth_headers or {}
+        response = requests.get(
+            url, headers=headers, params=params, timeout=30,
+        )
+        response.raise_for_status()
+        return response
+
     @override
     def _fetch_sample_record(self) -> dict | None:
-        """Fetch a parent record and extract the first child for schema inference.
+        """Fetch a parent, then its single-doc to get a child for schema."""
+        if not self._parent_doctype or not self._parent_field:
+            return None
 
-        The child doctype's own endpoint returns stubs, so we must go through
-        the parent to see the real child fields (account, debit, credit, etc.).
-        """
-        url = f"{self.url_base}{self.path}"
-        headers = self.authenticator.auth_headers or {}
-        params: dict[str, str] = {
-            "fields": json.dumps(["*"]),
-            "limit_page_length": "1",
-        }
         try:
-            response = requests.get(
-                url, headers=headers, params=params, timeout=30,
+            list_resp = self._make_request(
+                f"/api/resource/{self._parent_doctype}",
+                {"fields": json.dumps(["name"]), "limit_page_length": "1"},
             )
-            response.raise_for_status()
-            records = response.json().get("data", [])
-            if records:
-                parent = records[0]
-                children = parent.get(self._parent_field, [])
-                if isinstance(children, list) and children:
-                    return children[0]
+            parents = list(extract_jsonpath(
+                "$.data[*]", input=list_resp.json(),
+            ))
+            if not parents:
+                self.logger.warning(f"No parents found for {self.name}")
+                return None
+
+            parent_name = parents[0]["name"]
+            doc_resp = self._make_request(
+                f"/api/resource/{self._parent_doctype}/{parent_name}",
+            )
+            parent = doc_resp.json().get("data", {})
+            children = parent.get(self._parent_field, [])
+            if isinstance(children, list) and children:
+                return children[0]
+
             self.logger.warning(
-                f"No child records found in parent field "
-                f"'{self._parent_field}' for {self.name} — using minimal schema.",
+                f"No child records in '{self._parent_field}' for {self.name}",
             )
         except Exception as e:
-            self.logger.warning(
-                f"Failed to fetch sample child record for {self.name}: {e}",
-            )
+            self.logger.warning(f"Sample child record failed for {self.name}: {e}")
         return None
 
     @override
@@ -335,36 +346,65 @@ class ChildTableStream(ErpNextStream):
         context: Context | None,
         next_page_token: int | None,
     ) -> dict[str, Any]:
-        """Return URL params for the parent endpoint.
-
-        Uses ``fields=["*"]`` to ensure the embedded child table field
-        is included in the response.
-        """
+        """Return URL params for the parent LIST endpoint (IDs only)."""
         params: dict[str, Any] = {
-            "fields": json.dumps(["*"]),
+            "fields": json.dumps(["name"]),
             "limit_page_length": self.config.get("limit_page_length", 200),
         }
         if next_page_token is not None:
             params["limit_start"] = next_page_token
+        if self.replication_key:
+            params["order_by"] = f"{self.replication_key} asc"
+        starting = self.get_starting_timestamp(context)
+        if starting:
+            filter_condition = [
+                "modified", ">=", starting.strftime("%Y-%m-%d %H:%M:%S"),
+            ]
+            params["filters"] = json.dumps([filter_condition])
         return params
+
+    def _fetch_parent_doc(self, parent_name: str) -> dict:
+        """Fetch a single parent document and return its child records."""
+        try:
+            doc_resp = self._make_request(
+                f"/api/resource/{self._parent_doctype}/{parent_name}",
+            )
+            doc = doc_resp.json().get("data", {})
+            return doc.get(self._parent_field, [])
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to fetch {self._parent_doctype}/{parent_name}: {e}",
+            )
+            return []
 
     @override
     def parse_response(self, response: requests.Response) -> list[dict]:
-        """Extract child records from parent documents.
+        """Extract child records by fetching each parent in parallel.
 
-        Each parent document contains an embedded list of child records
-        under ``self._parent_field`` (e.g. ``accounts`` on a Journal Entry).
-        We extract and flatten all children across all parents in the page.
+        The list response only contains parent IDs. We fetch all parents
+        in the current page concurrently via ThreadPoolExecutor, then
+        extract children from each parent's embedded table field.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         parents = list(extract_jsonpath(
             self.records_jsonpath,
             input=response.json(parse_float=decimal.Decimal),
         ))
 
+        # Collect all parent names in this page
+        parent_names = [p["name"] for p in parents]
+
+        # Fetch all parents in parallel
         child_records: list[dict] = []
-        for parent in parents:
-            children = parent.get(self._parent_field, [])
-            if isinstance(children, list):
-                child_records.extend(children)
+        with ThreadPoolExecutor(max_workers=self._MAX_WORKERS) as executor:
+            future_to_name = {
+                executor.submit(self._fetch_parent_doc, name): name
+                for name in parent_names
+            }
+            for future in as_completed(future_to_name):
+                children = future.result()
+                if isinstance(children, list):
+                    child_records.extend(children)
 
         return child_records

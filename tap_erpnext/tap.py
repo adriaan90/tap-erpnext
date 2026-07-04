@@ -121,9 +121,10 @@ class TapErpNext(Tap):
             if missing:
                 self.logger.warning(f"Configured DocTypes not found: {missing}")
 
-        # Build child → (parent, fieldname) map from DocField
+        # Build child → (parent, fieldname) map from DocType meta
         child_parent_map: dict[str, tuple[str, str]] = {}
         if child_doctypes:
+            # Try DocField endpoint first, fall back to DocType/{parent}
             try:
                 fields_response = requests.get(
                     f"{api_url}/api/resource/DocField",
@@ -141,8 +142,30 @@ class TapErpNext(Tap):
                         field["parent"],
                         field["fieldname"],
                     )
-            except requests.RequestException as e:
-                self.logger.warning(f"Failed to discover child table parents: {e}")
+            except requests.RequestException:
+                self.logger.info(
+                    "DocField endpoint unavailable, falling back to DocType meta."
+                )
+                # Fallback: fetch each parent DocType and scan its fields
+                for parent in parent_doctypes:
+                    try:
+                        dt_resp = requests.get(
+                            f"{api_url}/api/resource/DocType/{parent}",
+                            headers=headers,
+                            timeout=30,
+                        )
+                        dt_resp.raise_for_status()
+                        dt_data = dt_resp.json().get("data", {})
+                        for field in dt_data.get("fields", []):
+                            if field.get("fieldtype") == "Table":
+                                child_parent_map[field["options"]] = (
+                                    parent,
+                                    field["fieldname"],
+                                )
+                    except requests.RequestException as e:
+                        self.logger.warning(
+                            f"Failed to fetch DocType/{parent} meta: {e}"
+                        )
 
         # Create streams: parent doctypes first, then child tables
         result = []
