@@ -259,12 +259,12 @@ class ChildTableStream(ErpNextStream):
 
     ERPNext's list endpoint for child doctypes only returns stubs
     (name, owner, creation, modified, etc.) — the actual data fields
-    (account, debit, credit, etc.) are only available via the single-doc
-    endpoint: ``/api/resource/{doctype}/{name}``.
+    (account, debit, credit, etc.) are only available embedded inside
+    the parent document.
 
-    This stream paginates through the list endpoint to discover record
-    names, then fetches each record individually from the single-doc
-    endpoint so that all fields are present.
+    This stream paginates through the **parent** endpoint and extracts
+    child records from the embedded table field (e.g. the ``accounts``
+    field on a Journal Entry).
     """
 
     # Child tables don't have a modified-based replication key in practice
@@ -290,56 +290,44 @@ class ChildTableStream(ErpNextStream):
         self._parent_doctype = parent_doctype
         self._parent_field = parent_field
 
+        # Override path to point to the PARENT endpoint — child data
+        # is only available embedded inside parent documents.
+        if parent_doctype:
+            self.path = f"/api/resource/{parent_doctype}"
+
     @override
     def _fetch_sample_record(self) -> dict | None:
-        """Fetch a full sample record from the single-doc endpoint.
+        """Fetch a parent record and extract the first child for schema inference.
 
-        The list endpoint returns stubs for child tables, so we must
-        first discover a record name from the list, then fetch it
-        individually.
+        The child doctype's own endpoint returns stubs, so we must go through
+        the parent to see the real child fields (account, debit, credit, etc.).
         """
         url = f"{self.url_base}{self.path}"
         headers = self.authenticator.auth_headers or {}
-
-        # Step 1: get a single stub to discover a record name
+        params: dict[str, str] = {
+            "fields": json.dumps(["*"]),
+            "limit_page_length": "1",
+        }
         try:
             response = requests.get(
-                url,
-                headers=headers,
-                params={"fields": json.dumps(["name"]), "limit_page_length": "1"},
-                timeout=30,
+                url, headers=headers, params=params, timeout=30,
             )
             response.raise_for_status()
             records = response.json().get("data", [])
-            if not records:
-                self.logger.warning(
-                    f"No records found for child table {self.name} — "
-                    f"using minimal schema.",
-                )
-                return None
-            name = records[0]["name"]
+            if records:
+                parent = records[0]
+                children = parent.get(self._parent_field, [])
+                if isinstance(children, list) and children:
+                    return children[0]
+            self.logger.warning(
+                f"No child records found in parent field "
+                f"'{self._parent_field}' for {self.name} — using minimal schema.",
+            )
         except Exception as e:
             self.logger.warning(
-                f"Failed to discover record names for child table "
-                f"{self.name}: {e} — using minimal schema.",
+                f"Failed to fetch sample child record for {self.name}: {e}",
             )
-            return None
-
-        # Step 2: fetch the full record from the single-doc endpoint
-        try:
-            response = requests.get(
-                f"{url}/{name}",
-                headers=headers,
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json().get("data")
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to fetch full record for child table "
-                f"{self.name}/{name}: {e} — using minimal schema.",
-            )
-            return None
+        return None
 
     @override
     def get_url_params(
@@ -347,9 +335,13 @@ class ChildTableStream(ErpNextStream):
         context: Context | None,
         next_page_token: int | None,
     ) -> dict[str, Any]:
-        """Return URL params — child tables only need name for discovery."""
+        """Return URL params for the parent endpoint.
+
+        Uses ``fields=["*"]`` to ensure the embedded child table field
+        is included in the response.
+        """
         params: dict[str, Any] = {
-            "fields": json.dumps(["name"]),
+            "fields": json.dumps(["*"]),
             "limit_page_length": self.config.get("limit_page_length", 200),
         }
         if next_page_token is not None:
@@ -358,37 +350,21 @@ class ChildTableStream(ErpNextStream):
 
     @override
     def parse_response(self, response: requests.Response) -> list[dict]:
-        """Expand stubs from the list endpoint into full records.
+        """Extract child records from parent documents.
 
-        Each stub only contains a name — we fetch the full record from
-        the single-doc endpoint.
+        Each parent document contains an embedded list of child records
+        under ``self._parent_field`` (e.g. ``accounts`` on a Journal Entry).
+        We extract and flatten all children across all parents in the page.
         """
-        stubs = list(extract_jsonpath(
+        parents = list(extract_jsonpath(
             self.records_jsonpath,
             input=response.json(parse_float=decimal.Decimal),
         ))
 
-        full_records: list[dict] = []
-        url = f"{self.url_base}{self.path}"
-        headers = self.authenticator.auth_headers or {}
+        child_records: list[dict] = []
+        for parent in parents:
+            children = parent.get(self._parent_field, [])
+            if isinstance(children, list):
+                child_records.extend(children)
 
-        for stub in stubs:
-            name = stub.get("name")
-            if not name:
-                continue
-            try:
-                record_resp = requests.get(
-                    f"{url}/{name}",
-                    headers=headers,
-                    timeout=30,
-                )
-                record_resp.raise_for_status()
-                record = record_resp.json().get("data")
-                if record:
-                    full_records.append(record)
-            except Exception as e:
-                self.logger.warning(
-                    f"Failed to fetch child record {self.name}/{name}: {e}",
-                )
-
-        return full_records
+        return child_records

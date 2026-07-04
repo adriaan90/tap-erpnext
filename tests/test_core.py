@@ -282,7 +282,7 @@ def test_create_child_table_stream():
     )
 
     assert stream.name == "Journal Entry Account"
-    assert stream.path == "/api/resource/Journal Entry Account"
+    assert stream.path == "/api/resource/Journal Entry"
     assert stream.primary_keys == ("name",)
     assert stream.replication_key is None
     assert stream._parent_doctype == "Journal Entry"
@@ -290,8 +290,8 @@ def test_create_child_table_stream():
 
 
 @patch("tap_erpnext.client.requests.get")
-def test_child_table_parse_response_expands_stubs(mock_requests_get):
-    """Test that ChildTableStream.parse_response fetches full records."""
+def test_child_table_parse_response_extracts_from_parent(mock_requests_get):
+    """Test that ChildTableStream.parse_response extracts children from parent docs."""
     tap = _make_mock_tap()
     stream = create_doctype_stream(
         "Journal Entry Account",
@@ -301,35 +301,53 @@ def test_child_table_parse_response_expands_stubs(mock_requests_get):
         parent_field="accounts",
     )
 
-    # Mock the individual record fetch
-    mock_record_resp = Mock()
-    mock_record_resp.json.return_value = {
-        "data": {
-            "name": "abc123",
-            "account": "Cash - KCD",
-            "debit": 5000.0,
-            "credit": 0.0,
-            "parent": "ACC-JV-2026-00001",
-            "modified": "2026-07-04 19:12:56",
-        },
-    }
-    mock_record_resp.raise_for_status.return_value = None
-    mock_requests_get.return_value = mock_record_resp
-
-    # Simulate a list response with stubs
+    # Simulate a parent list response with embedded child records
     mock_response = Mock()
     mock_response.json.return_value = {
         "data": [
-            {"name": "abc123"},
-            {"name": "def456"},
+            {
+                "name": "ACC-JV-2026-00001",
+                "modified": "2026-07-04 19:12:56",
+                "accounts": [
+                    {
+                        "name": "abc123",
+                        "account": "Cash - KCD",
+                        "debit": 5000.0,
+                        "credit": 0.0,
+                    },
+                    {
+                        "name": "def456",
+                        "account": "Debtors - KCD",
+                        "debit": 0.0,
+                        "credit": 5000.0,
+                    },
+                ],
+            },
+            {
+                "name": "ACC-JV-2026-00002",
+                "modified": "2026-07-04 20:00:00",
+                "accounts": [
+                    {
+                        "name": "ghi789",
+                        "account": "Bank - KCD",
+                        "debit": 1000.0,
+                        "credit": 0.0,
+                    },
+                ],
+            },
         ],
     }
 
     records = stream.parse_response(mock_response)
-    assert len(records) == 2
+    assert len(records) == 3
+    assert records[0]["name"] == "abc123"
     assert records[0]["account"] == "Cash - KCD"
     assert records[0]["debit"] == 5000.0
     assert records[0]["credit"] == 0.0
+    assert records[1]["name"] == "def456"
+    assert records[1]["account"] == "Debtors - KCD"
+    assert records[2]["name"] == "ghi789"
+    assert records[2]["account"] == "Bank - KCD"
 
 
 # --- Integration test ---
