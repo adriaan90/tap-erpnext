@@ -80,10 +80,10 @@ class TapErpNext(Tap):
             "Authorization": f"token {api_key}:{api_secret}",
             "Accept": "application/json",
         }
-        params = {
+        params: dict[str, str] = {
             "fields": json.dumps(["name"]),
             "filters": json.dumps([["istable", "=", 0], ["issingle", "=", 0]]),
-            "limit_page_length": 1000,
+            "limit_page_length": "1000",
         }
 
         try:

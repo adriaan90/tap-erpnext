@@ -1,5 +1,6 @@
 """Tests for tap-erpnext."""
 
+from typing import Any
 import datetime
 import json
 import logging
@@ -152,7 +153,7 @@ def test_discover_streams_with_config_doctypes(mock_tap_get, mock_fetch):
 
     mock_fetch.return_value = {"name": "TEST", "modified": "2023-01-01"}
 
-    config = SAMPLE_CONFIG.copy()
+    config: dict[str, Any] = SAMPLE_CONFIG.copy()
     config["doctypes"] = ["Sales Invoice", "Item"]
 
     tap = TapErpNext(config=config)
@@ -174,7 +175,7 @@ def test_discover_streams_missing_doctypes_warns(mock_tap_get, mock_fetch, caplo
 
     mock_fetch.return_value = {"name": "TEST", "modified": "2023-01-01"}
 
-    config = SAMPLE_CONFIG.copy()
+    config: dict[str, Any] = SAMPLE_CONFIG.copy()
     config["doctypes"] = ["NonExistent", "Customer"]
 
     tap = TapErpNext(config=config)

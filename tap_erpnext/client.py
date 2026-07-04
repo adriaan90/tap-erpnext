@@ -81,9 +81,9 @@ class ErpNextStream(RESTStream):
         """
         url = f"{self.url_base}{self.path}"
         headers = self.authenticator.auth_headers or {}
-        params = {
+        params: dict[str, str] = {
             "fields": json.dumps(["*"]),
-            "limit_page_length": 1,
+            "limit_page_length": "1",
         }
         try:
             response = requests.get(
@@ -114,28 +114,28 @@ class ErpNextStream(RESTStream):
         Returns:
             A Singer-compatible JSON Schema dict with all discovered fields.
         """
-        props = []
-        for key, value in record.items():
-            if value is None:
-                # Can't infer type from None — default to string
-                stype = th.StringType
-            elif isinstance(value, bool):
-                stype = th.BooleanType
-            elif isinstance(value, int):
-                stype = th.IntegerType
-            elif isinstance(value, float):
-                stype = th.NumberType
-            elif isinstance(value, (datetime.date, datetime.datetime)):
-                stype = th.DateTimeType
-            elif isinstance(value, list):
-                stype = th.ArrayType(th.StringType)
-            elif isinstance(value, dict):
-                stype = th.ObjectType()
-            else:
-                stype = th.StringType
-            props.append(th.Property(key, stype))
 
-        return th.PropertiesList(*props).to_dict()
+        def _singer_type(value: Any) -> th.JSONTypeHelper[Any] | type[th.JSONTypeHelper[Any]]:
+            """Map a Python value to the best Singer type."""
+            if value is None:
+                return th.StringType
+            if isinstance(value, bool):
+                return th.BooleanType
+            if isinstance(value, int):
+                return th.IntegerType
+            if isinstance(value, float):
+                return th.NumberType
+            if isinstance(value, (datetime.date, datetime.datetime)):
+                return th.DateTimeType
+            if isinstance(value, list):
+                return th.ArrayType(th.StringType)
+            if isinstance(value, dict):
+                return th.ObjectType()
+            return th.StringType
+
+        return th.PropertiesList(
+            *[th.Property(key, _singer_type(value)) for key, value in record.items()],
+        ).to_dict()
 
     @override
     @property
