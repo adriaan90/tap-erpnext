@@ -301,40 +301,54 @@ def test_child_table_parse_response_extracts_from_parent(mock_requests_get):
         parent_field="accounts",
     )
 
-    # Simulate a parent list response with embedded child records
+    # Mock the single-doc responses that _fetch_parent_doc will request
+    def _mock_get(url, **kwargs):
+        mock_resp = Mock()
+        if "ACC-JV-2026-00001" in url:
+            mock_resp.json.return_value = {
+                "data": {
+                    "accounts": [
+                        {
+                            "name": "abc123",
+                            "account": "Cash - KCD",
+                            "debit": 5000.0,
+                            "credit": 0.0,
+                        },
+                        {
+                            "name": "def456",
+                            "account": "Debtors - KCD",
+                            "debit": 0.0,
+                            "credit": 5000.0,
+                        },
+                    ],
+                },
+            }
+        elif "ACC-JV-2026-00002" in url:
+            mock_resp.json.return_value = {
+                "data": {
+                    "accounts": [
+                        {
+                            "name": "ghi789",
+                            "account": "Bank - KCD",
+                            "debit": 1000.0,
+                            "credit": 0.0,
+                        },
+                    ],
+                },
+            }
+        else:
+            mock_resp.json.return_value = {"data": []}
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    mock_requests_get.side_effect = _mock_get
+
+    # Simulate a parent list response (IDs only — what the list endpoint returns)
     mock_response = Mock()
     mock_response.json.return_value = {
         "data": [
-            {
-                "name": "ACC-JV-2026-00001",
-                "modified": "2026-07-04 19:12:56",
-                "accounts": [
-                    {
-                        "name": "abc123",
-                        "account": "Cash - KCD",
-                        "debit": 5000.0,
-                        "credit": 0.0,
-                    },
-                    {
-                        "name": "def456",
-                        "account": "Debtors - KCD",
-                        "debit": 0.0,
-                        "credit": 5000.0,
-                    },
-                ],
-            },
-            {
-                "name": "ACC-JV-2026-00002",
-                "modified": "2026-07-04 20:00:00",
-                "accounts": [
-                    {
-                        "name": "ghi789",
-                        "account": "Bank - KCD",
-                        "debit": 1000.0,
-                        "credit": 0.0,
-                    },
-                ],
-            },
+            {"name": "ACC-JV-2026-00001"},
+            {"name": "ACC-JV-2026-00002"},
         ],
     }
 
