@@ -80,9 +80,11 @@ class TapErpNext(Tap):
             "Authorization": f"token {api_key}:{api_secret}",
             "Accept": "application/json",
         }
+
+        # Fetch all DocTypes (excluding singles) with istable flag
         params: dict[str, str] = {
-            "fields": json.dumps(["name"]),
-            "filters": json.dumps([["istable", "=", 0], ["issingle", "=", 0]]),
+            "fields": json.dumps(["name", "istable"]),
+            "filters": json.dumps([["issingle", "=", 0]]),
             "limit_page_length": "1000",
         }
 
@@ -95,22 +97,80 @@ class TapErpNext(Tap):
             )
             response.raise_for_status()
             data = response.json()
-            doctypes = [d["name"] for d in data.get("data", [])]
+            all_doctypes = data.get("data", [])
         except requests.RequestException as e:
             self.logger.error(f"Failed to discover DocTypes: {e}")
             raise RuntimeError(f"DocType discovery failed: {e}") from e
+
+        # Separate parent and child doctypes
+        parent_doctypes = []
+        child_doctypes = []
+        for dt in all_doctypes:
+            if dt.get("istable", 0):
+                child_doctypes.append(dt["name"])
+            else:
+                parent_doctypes.append(dt["name"])
 
         # Filter to user-specified doctypes if configured
         config_doctypes = self.config.get("doctypes")
         if config_doctypes:
             config_set = set(config_doctypes)
-            doctypes = [d for d in doctypes if d in config_set]
-            missing = config_set - set(doctypes)
+            parent_doctypes = [d for d in parent_doctypes if d in config_set]
+            child_doctypes = [d for d in child_doctypes if d in config_set]
+            missing = config_set - set(parent_doctypes) - set(child_doctypes)
             if missing:
                 self.logger.warning(f"Configured DocTypes not found: {missing}")
 
-        # Create one stream per doctype using the factory function from streams.py
-        return [streams.create_doctype_stream(doctype, self) for doctype in doctypes]
+        # Build child → (parent, fieldname) map from DocField
+        child_parent_map: dict[str, tuple[str, str]] = {}
+        if child_doctypes:
+            try:
+                fields_response = requests.get(
+                    f"{api_url}/api/resource/DocField",
+                    headers=headers,
+                    params={
+                        "fields": json.dumps(["parent", "fieldname", "options"]),
+                        "filters": json.dumps([["fieldtype", "=", "Table"]]),
+                        "limit_page_length": "1000",
+                    },
+                    timeout=30,
+                )
+                fields_response.raise_for_status()
+                for field in fields_response.json().get("data", []):
+                    child_parent_map[field["options"]] = (
+                        field["parent"],
+                        field["fieldname"],
+                    )
+            except requests.RequestException as e:
+                self.logger.warning(f"Failed to discover child table parents: {e}")
+
+        # Create streams: parent doctypes first, then child tables
+        result = []
+        for doctype in parent_doctypes:
+            result.append(streams.create_doctype_stream(doctype, self))
+
+        for doctype in child_doctypes:
+            parent_info = child_parent_map.get(doctype)
+            if parent_info is None:
+                self.logger.warning(
+                    f"Child table '{doctype}' has no discoverable parent — skipping.",
+                )
+                continue
+            parent_doctype, parent_field = parent_info
+            self.logger.info(
+                f"Child table '{doctype}' → parent '{parent_doctype}.{parent_field}'",
+            )
+            result.append(
+                streams.create_doctype_stream(
+                    doctype,
+                    self,
+                    is_child=True,
+                    parent_doctype=parent_doctype,
+                    parent_field=parent_field,
+                ),
+            )
+
+        return result
 
 
 if __name__ == "__main__":
