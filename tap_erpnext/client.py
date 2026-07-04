@@ -189,8 +189,17 @@ class ErpNextStream(RESTStream):
         """
         params: dict[str, Any] = {}
 
-        # Request all fields (ERPNext defaults to only "name")
-        params["fields"] = json.dumps(["*"])
+        # Request all known fields from the discovered schema.
+        # ERPNext's fields=["*"] is unreliable — it only returns a default
+        # subset of fields. Instead, explicitly list every field we know about.
+        # Use _schema (not self.schema) to avoid triggering lazy discovery
+        # inside the request-building path (would recurse via _fetch_sample_record).
+        if self._schema is not None:
+            field_names = list(self._schema.get("properties", {}).keys())
+            params["fields"] = json.dumps(field_names)
+        else:
+            # Fallback for initial discovery (schema not yet inferred)
+            params["fields"] = json.dumps(["*"])
 
         # Set page size
         params["limit_page_length"] = self.config.get("limit_page_length", 200)
