@@ -43,7 +43,7 @@ MOCK_DOCTYPES_RESPONSE = {
     ]
 }
 
-MOCK_DOCFIELDS_RESPONSE = {
+MOCK_DOCFIELDS_RESPONSE: dict[str, list[dict[str, object]]] = {
     "data": []  # No child tables in basic test
 }
 

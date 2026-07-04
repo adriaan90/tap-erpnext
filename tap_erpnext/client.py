@@ -353,8 +353,6 @@ class ChildTableStream(ErpNextStream):
         }
         if next_page_token is not None:
             params["limit_start"] = next_page_token
-        if self.replication_key:
-            params["order_by"] = f"{self.replication_key} asc"
         starting = self.get_starting_timestamp(context)
         if starting:
             filter_condition = [
@@ -363,7 +361,7 @@ class ChildTableStream(ErpNextStream):
             params["filters"] = json.dumps([filter_condition])
         return params
 
-    def _fetch_parent_doc(self, parent_name: str) -> dict:
+    def _fetch_parent_doc(self, parent_name: str) -> list[dict]:
         """Fetch a single parent document and return its child records."""
         try:
             doc_resp = self._make_request(
@@ -404,7 +402,6 @@ class ChildTableStream(ErpNextStream):
             }
             for future in as_completed(future_to_name):
                 children = future.result()
-                if isinstance(children, list):
-                    child_records.extend(children)
+                child_records.extend(children)
 
         return child_records
