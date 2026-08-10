@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 from singer_sdk import StreamSchema, typing as th
-from singer_sdk.authenticators import APIKeyAuthenticator
+from singer_sdk.authenticators import BasicAuthenticator
 from singer_sdk.helpers.jsonpath import extract_jsonpath
 from singer_sdk.pagination import OffsetPaginator
 from singer_sdk.streams import RESTStream
@@ -25,14 +25,17 @@ if TYPE_CHECKING:
     from singer_sdk.streams.rest import HTTPRequest, PageContext
 
 
-class ErpNextAuthenticator(APIKeyAuthenticator):
-    """Custom authenticator for ERPNext token-based authentication."""
+class ErpNextAuthenticator(BasicAuthenticator):
+    """Custom authenticator for ERPNext basic authentication.
+
+    Frappe Cloud and most ERPNext deployments use HTTP Basic Auth
+    with the API key as the username and API secret as the password.
+    """
 
     def __init__(self, api_key: str, api_secret: str):
         super().__init__(
-            key="Authorization",
-            value=f"token {api_key}:{api_secret}",
-            location="header",
+            username=api_key,
+            password=api_secret,
         )
 
 

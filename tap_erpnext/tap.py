@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import sys
 
 import requests
@@ -77,9 +78,12 @@ class TapErpNext(Tap):
         api_secret = self.config["api_secret"]
 
         headers = {
-            "Authorization": f"token {api_key}:{api_secret}",
             "Accept": "application/json",
         }
+        # Use HTTP Basic Auth (Frappe Cloud expects this, not token auth)
+        credentials = f"{api_key}:{api_secret}".encode()
+        auth_token = base64.b64encode(credentials).decode("ascii")
+        headers["Authorization"] = f"Basic {auth_token}"
 
         # Fetch all DocTypes (excluding singles) with istable flag
         params: dict[str, str] = {
